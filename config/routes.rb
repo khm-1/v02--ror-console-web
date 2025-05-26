@@ -12,6 +12,11 @@ Rails.application.routes.draw do
   get "console", to: "console#index"
   post "console/execute", to: "console#execute"
   delete "console/clear_history", to: "console#clear_history"
+  
+  # Sandbox Console routes (more restricted)
+  get "console/sandbox", to: "console#sandbox"
+  post "console/sandbox/execute", to: "console#sandbox_execute"
+  delete "console/sandbox/clear_history", to: "console#sandbox_clear_history"
 
   # Reveal health status on /up that returns 200 if the app boots with no exceptions, otherwise 500.
   # Can be used by load balancers and uptime monitors to verify that the app is live.

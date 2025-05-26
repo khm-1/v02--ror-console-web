@@ -78,6 +78,87 @@ class ConsoleController < ApplicationController
     end
   end
   
+  # Sandbox execution context - more restricted than ConsoleContext
+  class SandboxContext
+    def initialize(session_variables = {})
+      @session_variables = session_variables || {}
+    end
+    
+    # Method to show current variables
+    def vars
+      if @session_variables.empty?
+        "No variables defined"
+      else
+        @session_variables.map { |k, v| "#{k} = #{v.inspect}" }.join("\n")
+      end
+    end
+    
+    # Method to get session variables
+    def session_variables
+      @session_variables
+    end
+    
+    # Method missing to handle session variable access
+    def method_missing(method_name, *args, &block)
+      method_str = method_name.to_s
+      
+      # Check if it's a variable assignment (ends with =)
+      if method_str.end_with?('=')
+        var_name = method_str[0..-2] # Remove the = 
+        @session_variables[var_name] = args.first
+        return args.first
+      end
+      
+      # Check if it's a session variable access
+      if @session_variables.key?(method_str)
+        return @session_variables[method_str]
+      end
+      
+      # Only allow very basic methods in sandbox mode
+      if sandbox_safe_method?(method_name)
+        if args.empty? && !block_given?
+          # Handle method calls without arguments
+          super
+        else
+          Object.send(method_name, *args, &block)
+        end
+      else
+        raise NameError, "undefined local variable or method `#{method_name}' for sandbox mode"
+      end
+    end
+    
+    def respond_to_missing?(method_name, include_private = false)
+      method_str = method_name.to_s
+      # Respond to session variables, variable assignments, or sandbox safe methods
+      @session_variables.key?(method_str) || 
+      method_str.end_with?('=') || 
+      sandbox_safe_method?(method_name) || 
+      super
+    end
+    
+    private
+    
+    def sandbox_safe_method?(method_name)
+      # Very restricted set of methods allowed in sandbox
+      safe_methods = %w[puts p pp print to_s inspect class + - * / % ** == != < > <= >= <=> & | ^ ~ << >> && ||]
+      method_str = method_name.to_s
+      
+      # Block dangerous classes and methods
+      blocked_patterns = [
+        /\AFile\z/, /\ADir\z/, /\AIO\z/, /\AKernel\z/, /\AObject\z/, /\AClass\z/, /\AModule\z/,
+        /\Asystem\z/, /\Aexec\z/, /\Aeval\z/, /\Arequire\z/, /\Aload\z/
+      ]
+      
+      return false if blocked_patterns.any? { |pattern| method_str.match?(pattern) }
+      
+      # Allow basic safe methods, numeric operations, and literals
+      safe_methods.include?(method_str) ||
+      method_str.match?(/\A[0-9]+\z/) || # Allow numeric literals
+      method_str.match?(/\A(true|false|nil)\z/) || # Allow boolean/nil literals
+      method_str.match?(/\A(String|Integer|Float|Array|Hash|TrueClass|FalseClass|NilClass|Numeric)\z/) # Allow basic class access
+    end
+  end
+  
   # Skip CSRF protection for AJAX requests
   skip_before_action :verify_authenticity_token, only: [:execute]
   
@@ -128,6 +209,63 @@ class ConsoleController < ApplicationController
     render json: { message: "History and variables cleared" }
   end
   
+  # Sandbox mode - more restricted console
+  def sandbox
+    @command_history = session[:sandbox_history] || []
+    @sandbox_mode = true
+    render :index
+  end
+  
+  def sandbox_execute
+    command = params[:command]&.strip
+    
+    return render json: { error: "Command cannot be empty" }, status: 400 if command.blank?
+    
+    # Enhanced security check for sandbox mode
+    if dangerous_command?(command) || sandbox_restricted_command?(command)
+      return render json: { error: "Command not allowed in sandbox mode" }, status: 403
+    end
+    
+    begin
+      # Store command in sandbox session history
+      session[:sandbox_history] ||= []
+      session[:sandbox_history] << command
+      session[:sandbox_history] = session[:sandbox_history].last(50)
+      
+      # Execute the command in sandbox context
+      result = execute_sandbox_command(command)
+      
+      render json: {
+        command: command,
+        result: format_result(result),
+        timestamp: Time.current.to_s,
+        mode: "sandbox"
+      }
+    rescue SecurityError => e
+      render json: {
+        command: command,
+        error: "undefined local variable or method for sandbox mode",
+        error_class: "NameError",
+        timestamp: Time.current.to_s,
+        mode: "sandbox"
+      }
+    rescue => e
+      render json: {
+        command: command,
+        error: e.message,
+        error_class: e.class.name,
+        timestamp: Time.current.to_s,
+        mode: "sandbox"
+      }
+    end
+  end
+  
+  def sandbox_clear_history
+    session[:sandbox_history] = []
+    session[:sandbox_variables] = {}
+    render json: { message: "Sandbox history and variables cleared" }
+  end
+
   private
   
   def authenticate_console_user
@@ -167,6 +305,59 @@ class ConsoleController < ApplicationController
     dangerous_patterns.any? { |pattern| command.match?(pattern) }
   end
   
+  def sandbox_restricted_command?(command)
+    # Additional restricted commands for sandbox mode
+    restricted_patterns = [
+      /chown\s+/i,
+      /chmod\s+/i,
+      /rm\s+-rf/i,
+      /cp\s+-r/i,
+      /mv\s+/i,
+      /ln\s+/i,
+      /tail\s+/i,
+      /head\s+/i,
+      /cat\s+/i,
+      /less\s+/i,
+      /more\s+/i,
+      /nano\s+/i,
+      /vim\s+/i,
+      /emacs\s+/i,
+      /gedit\s+/i,
+      /open\s+/i,
+      /xdg-open\s+/i,
+      /kill\s+/i,
+      /pkill\s+/i,
+      /killall\s+/i,
+      /shutdown\s+/i,
+      /reboot\s+/i,
+      /halt\s+/i,
+      /poweroff\s+/i
+    ]
+    
+    restricted_patterns.any? { |pattern| command.match?(pattern) }
+  end
+  
+  def sandbox_command_restricted?(command)
+    # Additional sandbox-specific restrictions
+    sandbox_restricted_patterns = [
+      /File\./i,
+      /Dir\./i,
+      /IO\./i,
+      /Object\./i,
+      /Class\./i,
+      /Module\./i,
+      /Kernel\./i,
+      /require\s*\(/i,
+      /load\s*\(/i,
+      /eval\s*\(/i,
+      /instance_eval\s*\(/i,
+      /class_eval\s*\(/i,
+      /module_eval\s*\(/i
+    ]
+    
+    sandbox_restricted_patterns.any? { |pattern| command.match?(pattern) }
+  end
+  
   def execute_safe_command(command)
     # Get session variables (or initialize empty hash)
     session[:console_variables] ||= {}
@@ -199,6 +390,36 @@ class ConsoleController < ApplicationController
       
       result
     end
+  end
+  
+  def execute_sandbox_command(command)
+    # Enhanced security check for specific sandbox restrictions
+    if sandbox_command_restricted?(command)
+      raise SecurityError, "Command contains restricted operations for sandbox mode"
+    end
+    
+    # Initialize sandbox variables from session
+    session[:sandbox_variables] ||= {}
+    
+    # Check if this is a variable assignment
+    assignment_match = command.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/)
+    
+    # Create sandbox context with session variables
+    context = SandboxContext.new(session[:sandbox_variables])
+    
+    # Evaluate the command in the sandbox context
+    result = context.instance_eval(command)
+    
+    # If this was an assignment, capture the assigned value
+    if assignment_match
+      var_name = assignment_match[1]
+      session[:sandbox_variables][var_name] = context.instance_variable_get("@#{var_name}") || result
+    else
+      # Store any new variables that might have been created
+      session[:sandbox_variables] = context.session_variables
+    end
+    
+    result
   end
   
   def create_safe_binding
