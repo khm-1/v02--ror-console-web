@@ -1,9 +1,14 @@
 class ConsoleController < ApplicationController
   # Console execution context
   class ConsoleContext
-    def initialize
+    # Include the console helpers module
+    require_relative '../../lib/console_helpers'
+    include ConsoleHelpers
+    
+    def initialize(session_variables = {})
       # Make Rails application available
       @app = Rails.application
+      @session_variables = session_variables || {}
     end
     
     # Access to Rails application
@@ -16,33 +21,51 @@ class ConsoleController < ApplicationController
       "Application reload is not supported in web console for safety reasons"
     end
     
-    # Helper method for model listing
-    def models
-      ApplicationRecord.descendants.map(&:name).sort
+    # Method to show current variables
+    def vars
+      if @session_variables.empty?
+        "No variables defined"
+      else
+        @session_variables.map { |k, v| "#{k} = #{v.inspect}" }.join("\n")
+      end
     end
     
-    # Helper method for routes
-    def routes
-      Rails.application.routes.routes.map do |route|
-        {
-          verb: route.verb,
-          path: route.path.spec.to_s,
-          controller_action: route.defaults[:controller] ? "#{route.defaults[:controller]}##{route.defaults[:action]}" : nil
-        }.compact
-      end.first(20) # Limit to first 20 routes
+    # Method to get session variables
+    def session_variables
+      @session_variables
     end
     
-    # Method missing to delegate to main object if safe
+    # Method missing to handle session variable access
     def method_missing(method_name, *args, &block)
+      method_str = method_name.to_s
+      
+      # Check if it's a variable assignment (ends with =)
+      if method_str.end_with?('=')
+        var_name = method_str[0..-2] # Remove the = 
+        @session_variables[var_name] = args.first
+        return args.first
+      end
+      
+      # Check if it's a session variable access
+      if @session_variables.key?(method_str)
+        return @session_variables[method_str]
+      end
+      
+      # Delegate to safe methods or super
       if safe_method?(method_name)
         Object.send(method_name, *args, &block)
       else
-        super
+        raise NameError, "undefined local variable or method `#{method_name}'"
       end
     end
     
     def respond_to_missing?(method_name, include_private = false)
-      safe_method?(method_name) || super
+      method_str = method_name.to_s
+      # Respond to session variables, variable assignments, or safe methods
+      @session_variables.key?(method_str) || 
+      method_str.end_with?('=') || 
+      safe_method?(method_name) || 
+      super
     end
     
     private
@@ -101,15 +124,16 @@ class ConsoleController < ApplicationController
   
   def clear_history
     session[:console_history] = []
-    render json: { message: "History cleared" }
+    session[:console_variables] = {} # Also clear variables
+    render json: { message: "History and variables cleared" }
   end
   
   private
   
   def authenticate_console_user
     # Basic authentication - replace with your auth system
-    # For development, you might want to restrict this to certain environments
-    unless Rails.env.development?
+    # For development and test, you might want to restrict this to certain environments
+    unless Rails.env.development? || Rails.env.test?
       render plain: "Console access not allowed in this environment", status: 403
     end
   end
@@ -144,9 +168,37 @@ class ConsoleController < ApplicationController
   end
   
   def execute_safe_command(command)
-    # Create a safe execution context
-    context = ConsoleContext.new
-    context.instance_eval(command)
+    # Get session variables (or initialize empty hash)
+    session[:console_variables] ||= {}
+    
+    # Create a safe execution context with session variables
+    context = ConsoleContext.new(session[:console_variables])
+    
+    # Check if this is a variable assignment
+    if match = command.match(/\A\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)\z/)
+      # Handle variable assignment manually
+      var_name = match[1].strip
+      expression = match[2].strip
+      
+      # Evaluate the right-hand side expression first
+      value = context.instance_eval(expression)
+      
+      # Store the variable
+      context.session_variables[var_name] = value
+      
+      # Store updated session variables back to session
+      session[:console_variables] = context.session_variables
+      
+      return value
+    else
+      # For variable access and other expressions, use instance_eval
+      result = context.instance_eval(command)
+      
+      # Store updated session variables back to session
+      session[:console_variables] = context.session_variables
+      
+      result
+    end
   end
   
   def create_safe_binding
@@ -171,7 +223,15 @@ class ConsoleController < ApplicationController
   def format_result(result)
     case result
     when String
-      result
+      # Check if this looks like formatted console output (contains " = " pattern)
+      # If so, don't add quotes around it
+      if result.include?(" = ") && result.count("\n") > 0
+        result
+      else
+        # For regular strings, return them without quotes for compatibility
+        # This maintains backward compatibility with existing tests
+        result
+      end
     when NilClass
       "nil"
     when TrueClass, FalseClass
