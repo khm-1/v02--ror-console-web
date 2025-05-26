@@ -93,12 +93,17 @@ class ConsoleController < ApplicationController
       end
     end
     
+    # Method to show sandbox info
+    def sandbox_info
+      "🏖️  SANDBOX MODE: Database changes will be automatically rolled back.\nYou can safely experiment with data without affecting the real database!"
+    end
+    
     # Method to get session variables
     def session_variables
       @session_variables
     end
     
-    # Method missing to handle session variable access
+    # Method missing to handle session variable access and Rails model access
     def method_missing(method_name, *args, &block)
       method_str = method_name.to_s
       
@@ -109,12 +114,18 @@ class ConsoleController < ApplicationController
         return args.first
       end
       
-      # Check if it's a session variable access
+      # Check if it's a session variable access first
       if @session_variables.key?(method_str)
         return @session_variables[method_str]
       end
       
-      # Only allow very basic methods in sandbox mode
+      # Allow access to Rails models and constants (like Post, User, etc.)
+      # But only if it looks like a constant (starts with capital letter)
+      if method_str.match?(/\A[A-Z]/) && Object.const_defined?(method_str)
+        return Object.const_get(method_str)
+      end
+      
+      # Allow basic safe methods
       if sandbox_safe_method?(method_name)
         if args.empty? && !block_given?
           # Handle method calls without arguments
@@ -129,9 +140,10 @@ class ConsoleController < ApplicationController
     
     def respond_to_missing?(method_name, include_private = false)
       method_str = method_name.to_s
-      # Respond to session variables, variable assignments, or sandbox safe methods
+      # Respond to session variables, variable assignments, constants (capitalized), or sandbox safe methods
       @session_variables.key?(method_str) || 
       method_str.end_with?('=') || 
+      (method_str.match?(/\A[A-Z]/) && Object.const_defined?(method_str)) ||
       sandbox_safe_method?(method_name) || 
       super
     end
@@ -139,13 +151,13 @@ class ConsoleController < ApplicationController
     private
     
     def sandbox_safe_method?(method_name)
-      # Very restricted set of methods allowed in sandbox
+      # Allow basic safe methods and operations
       safe_methods = %w[puts p pp print to_s inspect class + - * / % ** == != < > <= >= <=> & | ^ ~ << >> && ||]
       method_str = method_name.to_s
       
-      # Block dangerous classes and methods
+      # Block dangerous classes and methods that could bypass sandbox
       blocked_patterns = [
-        /\AFile\z/, /\ADir\z/, /\AIO\z/, /\AKernel\z/, /\AObject\z/, /\AClass\z/, /\AModule\z/,
+        /\AFile\z/, /\ADir\z/, /\AIO\z/, /\AKernel\z/, /\AClass\z/, /\AModule\z/,
         /\Asystem\z/, /\Aexec\z/, /\Aeval\z/, /\Arequire\z/, /\Aload\z/
       ]
       
@@ -404,19 +416,26 @@ class ConsoleController < ApplicationController
     # Check if this is a variable assignment
     assignment_match = command.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/)
     
-    # Create sandbox context with session variables
-    context = SandboxContext.new(session[:sandbox_variables])
-    
-    # Evaluate the command in the sandbox context
-    result = context.instance_eval(command)
-    
-    # If this was an assignment, capture the assigned value
-    if assignment_match
-      var_name = assignment_match[1]
-      session[:sandbox_variables][var_name] = context.instance_variable_get("@#{var_name}") || result
-    else
-      # Store any new variables that might have been created
-      session[:sandbox_variables] = context.session_variables
+    # Execute in a database transaction that always rolls back to prevent persistent changes
+    result = nil
+    ActiveRecord::Base.transaction do
+      # Create sandbox context with session variables
+      context = SandboxContext.new(session[:sandbox_variables])
+      
+      # Evaluate the command in the sandbox context
+      result = context.instance_eval(command)
+      
+      # If this was an assignment, capture the assigned value
+      if assignment_match
+        var_name = assignment_match[1]
+        session[:sandbox_variables][var_name] = context.instance_variable_get("@#{var_name}") || result
+      else
+        # Store any new variables that might have been created
+        session[:sandbox_variables] = context.session_variables
+      end
+      
+      # Always rollback the transaction to prevent database changes
+      raise ActiveRecord::Rollback
     end
     
     result
