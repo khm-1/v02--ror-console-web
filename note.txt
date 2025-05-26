@@ -2,6 +2,8 @@
 rails db:migrate
 rails db:rollback
 
+rails generate migration AddAuthorToPosts author:string
+
 rails generate scaffold Post title:string body:text
 rails generate model Post title:string body:text
 
