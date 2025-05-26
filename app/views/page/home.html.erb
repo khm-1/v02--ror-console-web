@@ -9,5 +9,6 @@
 <p><%= link_to "About Us", about_path %></p>
 <% if Rails.env.development? %>
   <p><%= link_to "Rails Web Console", console_path, style: "color: #0066cc; font-weight: bold;" %></p>
+  <p><%= link_to "Sandbox Console", console_sandbox_path, style: "color: #ff6600; font-weight: bold;" %></p>
 <% end %>
 <p><%= link_to "rails_health_check", rails_health_check_path %></p>
