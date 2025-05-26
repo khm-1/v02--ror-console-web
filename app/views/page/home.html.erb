@@ -7,4 +7,7 @@
 <p>Current time is: <%= Time.now.strftime("%I:%M %p") %></p>
 
 <p><%= link_to "About Us", about_path %></p>
+<% if Rails.env.development? %>
+  <p><%= link_to "Rails Web Console", console_path, style: "color: #0066cc; font-weight: bold;" %></p>
+<% end %>
 <p><%= link_to "rails_health_check", rails_health_check_path %></p>

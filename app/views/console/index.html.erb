@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Rails Web Console</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <%= csrf_meta_tags %>
+    <%= csp_meta_tag %>
+    
+    <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
+    <%= javascript_importmap_tags %>
+    <%= javascript_include_tag "console", defer: true %>
+    
+    <style>
+      body {
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        background-color: #1e1e1e;
+        color: #d4d4d4;
+        margin: 0;
+        padding: 20px;
+      }
+      
+      .console-container {
+        max-width: 1200px;
+        margin: 0 auto;
+        background-color: #252526;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+      }
+      
+      .console-header {
+        background-color: #3c3c3c;
+        padding: 10px 20px;
+        border-bottom: 1px solid #464647;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      
+      .console-title {
+        color: #cccccc;
+        font-weight: bold;
+        font-size: 14px;
+      }
+      
+      .console-actions {
+        display: flex;
+        gap: 10px;
+      }
+      
+      .btn {
+        background-color: #0e639c;
+        color: white;
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        font-family: inherit;
+      }
+      
+      .btn:hover {
+        background-color: #1177bb;
+      }
+      
+      .btn-danger {
+        background-color: #a1260d;
+      }
+      
+      .btn-danger:hover {
+        background-color: #c42b1c;
+      }
+      
+      .console-output {
+        height: 400px;
+        overflow-y: auto;
+        padding: 15px;
+        background-color: #1e1e1e;
+        font-size: 14px;
+        line-height: 1.4;
+      }
+      
+      .console-input-container {
+        padding: 15px;
+        background-color: #252526;
+        border-top: 1px solid #464647;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      
+      .console-prompt {
+        color: #6a9955;
+        font-weight: bold;
+      }
+      
+      .console-input {
+        flex: 1;
+        background-color: #3c3c3c;
+        color: #d4d4d4;
+        border: 1px solid #464647;
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-family: inherit;
+        font-size: 14px;
+      }
+      
+      .console-input:focus {
+        outline: none;
+        border-color: #0e639c;
+        box-shadow: 0 0 0 1px #0e639c;
+      }
+      
+      .output-line {
+        margin-bottom: 8px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      
+      .output-command {
+        color: #6a9955;
+      }
+      
+      .output-result {
+        color: #d4d4d4;
+        margin-left: 20px;
+      }
+      
+      .output-error {
+        color: #f14c4c;
+        margin-left: 20px;
+      }
+      
+      .output-timestamp {
+        color: #808080;
+        font-size: 12px;
+        margin-left: 20px;
+      }
+      
+      .loading {
+        color: #ffcc02;
+        margin-left: 20px;
+      }
+      
+      .history-item {
+        cursor: pointer;
+        padding: 2px 4px;
+        border-radius: 2px;
+      }
+      
+      .history-item:hover {
+        background-color: #464647;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="console-container">
+      <div class="console-header">
+        <div class="console-title">Rails Web Console</div>
+        <div class="console-actions">
+          <button type="button" class="btn" onclick="clearOutput()">Clear Output</button>
+          <button type="button" class="btn btn-danger" onclick="clearHistory()">Clear History</button>
+        </div>
+      </div>
+      
+      <div class="console-output" id="console-output">
+        <div class="output-line">
+          <span style="color: #6a9955;">Welcome to Rails Web Console</span>
+        </div>
+        <div class="output-line">
+          <span style="color: #808080;">Type Ruby/Rails commands below. Use Ctrl+L to clear output.</span>
+        </div>
+        <div class="output-line">
+          <span style="color: #808080;">Available shortcuts: ↑↓ for history, Tab for basic completion</span>
+        </div>
+        <div class="output-line">
+          <span style="color: #569cd6;">Try these commands:</span>
+        </div>
+        <div class="output-line">
+          <span style="color: #9cdcfe;">  models</span> <span style="color: #808080;"># List all models</span>
+        </div>
+        <div class="output-line">
+          <span style="color: #9cdcfe;">  routes</span> <span style="color: #808080;"># Show all routes</span>
+        </div>
+        <div class="output-line">
+          <span style="color: #9cdcfe;">  Post.count</span> <span style="color: #808080;"># Count posts</span>
+        </div>
+        <div class="output-line">
+          <span style="color: #9cdcfe;">  model_info(Post)</span> <span style="color: #808080;"># Get model details</span>
+        </div>
+        <div class="output-line">
+          <span style="color: #9cdcfe;">  env_info</span> <span style="color: #808080;"># Environment information</span>
+        </div>
+        <% if @command_history.any? %>
+          <div class="output-line">
+            <span style="color: #808080;">Recent commands:</span>
+          </div>
+          <% @command_history.last(5).each do |cmd| %>
+            <div class="output-line history-item" onclick="setCommand('<%= cmd.gsub("'", "\\'") %>')">
+              <span style="color: #569cd6;"><%= cmd %></span>
+            </div>
+          <% end %>
+        <% end %>
+      </div>
+      
+      <div class="console-input-container">
+        <span class="console-prompt">></span>
+        <input type="text" class="console-input" id="console-input" 
+               placeholder="Enter Ruby/Rails command..." 
+               autocomplete="off">
+        <button type="button" class="btn" onclick="executeCommand()">Execute</button>
+      </div>
+    </div>
+
+    <script>
+      // Initialize console data
+      window.initialHistory = <%= @command_history.to_json.html_safe %>;
+      
+      // Simple fallback functions if enhanced console.js fails to load
+      if (typeof window.railsConsole === 'undefined') {
+        console.log('Loading fallback console functions...');
+        
+        let commandHistory = window.initialHistory || [];
+        let historyIndex = commandHistory.length;
+        
+        const outputEl = document.getElementById('console-output');
+        const inputEl = document.getElementById('console-input');
+        
+        // Focus input on load
+        document.addEventListener('DOMContentLoaded', function() {
+          inputEl.focus();
+        });
+        
+        // Handle Enter key
+        inputEl.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') {
+            executeCommand();
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            navigateHistory(-1);
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            navigateHistory(1);
+          } else if (e.ctrlKey && e.key === 'l') {
+            e.preventDefault();
+            clearOutput();
+          }
+        });
+        
+        function navigateHistory(direction) {
+          historyIndex += direction;
+          
+          if (historyIndex < 0) {
+            historyIndex = 0;
+          } else if (historyIndex > commandHistory.length) {
+            historyIndex = commandHistory.length;
+          }
+          
+          if (historyIndex === commandHistory.length) {
+            inputEl.value = '';
+          } else {
+            inputEl.value = commandHistory[historyIndex] || '';
+          }
+        }
+        
+        function setCommand(command) {
+          inputEl.value = command;
+          inputEl.focus();
+        }
+        
+        function executeCommand() {
+          const command = inputEl.value.trim();
+          if (!command) return;
+          
+          console.log('Executing command:', command);
+          
+          // Add to local history
+          commandHistory.push(command);
+          historyIndex = commandHistory.length;
+          
+          // Display command
+          addOutputLine(`> ${command}`, 'output-command');
+          const loadingLine = addOutputLine('Executing...', 'loading');
+          
+          // Clear input
+          inputEl.value = '';
+          
+          // Execute command
+          fetch('/console/execute', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': document.querySelector('[name="csrf-token"]').content
+            },
+            body: JSON.stringify({ command: command })
+          })
+          .then(response => {
+            console.log('Response status:', response.status);
+            return response.json();
+          })
+          .then(data => {
+            console.log('Response data:', data);
+            
+            // Remove loading message
+            if (loadingLine && loadingLine.parentElement) {
+              loadingLine.remove();
+            }
+            
+            if (data.error) {
+              addOutputLine(`Error: ${data.error}`, 'output-error');
+              if (data.error_class) {
+                addOutputLine(`(${data.error_class})`, 'output-error');
+              }
+            } else {
+              displayResult(data.result);
+            }
+            
+            if (data.timestamp) {
+              addOutputLine(`[${data.timestamp}]`, 'output-timestamp');
+            }
+            
+            scrollToBottom();
+          })
+          .catch(error => {
+            console.error('Fetch error:', error);
+            if (loadingLine && loadingLine.parentElement) {
+              loadingLine.remove();
+            }
+            addOutputLine(`Network Error: ${error.message}`, 'output-error');
+            scrollToBottom();
+          });
+        }
+        
+        function displayResult(result) {
+          console.log('Displaying result:', result, typeof result);
+          
+          if (Array.isArray(result)) {
+            result.forEach(item => {
+              addOutputLine(String(item), 'output-result');
+            });
+          } else if (result !== null && result !== undefined) {
+            addOutputLine(String(result), 'output-result');
+          } else {
+            addOutputLine('nil', 'output-result');
+          }
+        }
+        
+        function addOutputLine(text, className = '') {
+          const line = document.createElement('div');
+          line.className = `output-line ${className}`;
+          line.textContent = text;
+          outputEl.appendChild(line);
+          return line;
+        }
+        
+        function scrollToBottom() {
+          outputEl.scrollTop = outputEl.scrollHeight;
+        }
+        
+        function clearOutput() {
+          const lines = outputEl.querySelectorAll('.output-line');
+          lines.forEach((line, index) => {
+            if (index >= 10) { // Keep welcome messages
+              line.remove();
+            }
+          });
+        }
+        
+        function clearHistory() {
+          if (confirm('Are you sure you want to clear command history?')) {
+            fetch('/console/clear_history', {
+              method: 'DELETE',
+              headers: {
+                'X-CSRF-Token': document.querySelector('[name="csrf-token"]').content
+              }
+            })
+            .then(response => response.json())
+            .then(data => {
+              commandHistory = [];
+              historyIndex = 0;
+              addOutputLine('Command history cleared.', 'output-result');
+              scrollToBottom();
+            })
+            .catch(error => {
+              addOutputLine(`Error clearing history: ${error.message}`, 'output-error');
+              scrollToBottom();
+            });
+          }
+        }
+        
+        // Make functions globally available
+        window.executeCommand = executeCommand;
+        window.clearOutput = clearOutput;
+        window.clearHistory = clearHistory;
+        window.setCommand = setCommand;
+      }
+    </script>
+  </body>
+</html>

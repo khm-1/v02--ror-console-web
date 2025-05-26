@@ -54,6 +54,10 @@ end
 group :development do
   # Use console on exceptions pages [https://github.com/rails/web-console]
   gem "web-console"
+  
+  # Web-based Rails console gems
+  gem "rouge", "~> 4.0" # Syntax highlighting
+  gem "coderay", "~> 1.1" # Alternative syntax highlighting
 end
 
 group :test do
