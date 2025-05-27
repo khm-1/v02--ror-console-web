@@ -8,3 +8,6 @@ rails generate scaffold Post title:string body:text
 rails generate model Post title:string body:text
 
 rails routes
+
+---
+r-m-k=d980fb93396437b1213ead2f1e51668a
