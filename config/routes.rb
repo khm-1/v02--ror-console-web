@@ -13,6 +13,14 @@ Rails.application.routes.draw do
   post "console/execute", to: "console#execute"
   delete "console/clear_history", to: "console#clear_history"
   
+  # Console session management routes
+  post "console/new_session", to: "console#new_session"
+  get "console/session_list", to: "console#session_list"
+  post "console/select_session", to: "console#select_session"
+  put "console/select_session/:session_id", to: "console#select_session"
+  delete "console/close_session", to: "console#close_session"
+  delete "console/close_session/:session_id", to: "console#close_session"
+  
   # Sandbox Console routes (more restricted)
   get "console/sandbox", to: "console#sandbox"
   post "console/sandbox/execute", to: "console#sandbox_execute"

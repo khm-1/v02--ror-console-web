@@ -6,9 +6,11 @@ class RailsWebConsole {
     this.outputEl = document.getElementById('console-output');
     this.inputEl = document.getElementById('console-input');
     this.currentSession = Date.now();
+    this.currentSessionName = null;
     
     this.initializeEventListeners();
     this.focusInput();
+    this.loadCurrentSessionInfo();
   }
   
   initializeEventListeners() {
@@ -261,6 +263,227 @@ class RailsWebConsole {
     this.inputEl.value = command;
     this.focusInput();
   }
+  
+  // Session Management Methods
+  async loadCurrentSessionInfo() {
+    try {
+      const response = await fetch('/console/session_list', {
+        method: 'GET',
+        headers: {
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.current_session) {
+          this.updateSessionDisplay(data.current_session);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading session info:', error);
+    }
+  }
+  
+  updateSessionDisplay(sessionInfo) {
+    const sessionInfoEl = document.getElementById('current-session-info');
+    if (sessionInfoEl && sessionInfo) {
+      sessionInfoEl.textContent = ` - ${sessionInfo.name}`;
+      this.currentSessionName = sessionInfo.name;
+    }
+  }
+  
+  async newSession() {
+    const sessionName = prompt('Enter session name:', `Session ${new Date().toLocaleTimeString()}`);
+    if (!sessionName) return;
+    
+    try {
+      const response = await fetch('/console/new_session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        },
+        body: JSON.stringify({ name: sessionName })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        this.updateSessionDisplay(data.session);
+        this.clearOutput();
+        this.addOutputLine('✅ Created new session: ' + sessionName, 'output-result');
+        this.loadHistory();
+      } else {
+        this.addOutputLine('❌ Failed to create session', 'output-error');
+      }
+    } catch (error) {
+      console.error('Error creating session:', error);
+      this.addOutputLine('❌ Error creating session', 'output-error');
+    }
+  }
+  
+  async showSessionManager() {
+    try {
+      const response = await fetch('/console/session_list', {
+        method: 'GET',
+        headers: {
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        this.displaySessionModal(data.sessions, data.current_session);
+      } else {
+        this.addOutputLine('❌ Failed to load sessions', 'output-error');
+      }
+    } catch (error) {
+      console.error('Error loading sessions:', error);
+      this.addOutputLine('❌ Error loading sessions', 'output-error');
+    }
+  }
+  
+  displaySessionModal(sessions, currentSession) {
+    // Remove existing modal if present
+    const existingModal = document.getElementById('session-modal');
+    if (existingModal) {
+      existingModal.remove();
+    }
+    
+    // Create modal HTML
+    const modal = document.createElement('div');
+    modal.id = 'session-modal';
+    modal.innerHTML = `
+      <div class="modal-backdrop">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Session Manager</h3>
+            <button class="modal-close" onclick="this.closest('#session-modal').remove()">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="session-list">
+              ${sessions.map(session => `
+                <div class="session-item ${session.id === currentSession?.id ? 'current' : ''}" data-session-id="${session.id}">
+                  <div class="session-info">
+                    <div class="session-name">${session.name}</div>
+                    <div class="session-meta">
+                      Created: ${new Date(session.created_at).toLocaleString()}
+                      ${session.last_active ? `| Last active: ${new Date(session.last_active).toLocaleString()}` : ''}
+                    </div>
+                    <div class="session-stats">
+                      Variables: ${Object.keys(session.variables || {}).length} | 
+                      History: ${(session.history || []).length} commands
+                    </div>
+                  </div>
+                  <div class="session-actions">
+                    ${session.id === currentSession?.id ? 
+                      '<span class="current-badge">Current</span>' : 
+                      `<button class="btn btn-sm" onclick="window.railsConsole.selectSession('${session.id}')">Switch</button>`
+                    }
+                    ${sessions.length > 1 ? 
+                      `<button class="btn btn-sm btn-danger" onclick="window.railsConsole.closeSession('${session.id}')">Close</button>` : 
+                      ''
+                    }
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+            ${sessions.length === 0 ? '<p>No sessions available. Create a new session to get started.</p>' : ''}
+          </div>
+          <div class="modal-footer">
+            <button class="btn" onclick="window.railsConsole.newSession().then(() => this.closest('#session-modal').remove())">New Session</button>
+            <button class="btn btn-secondary" onclick="this.closest('#session-modal').remove()">Close</button>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+  }
+  
+  async selectSession(sessionId) {
+    try {
+      const response = await fetch('/console/select_session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        },
+        body: JSON.stringify({ session_id: sessionId })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        this.updateSessionDisplay(data.session);
+        this.clearOutput();
+        this.addOutputLine('✅ Switched to session: ' + data.session.name, 'output-result');
+        this.loadHistory();
+        
+        // Close modal
+        const modal = document.getElementById('session-modal');
+        if (modal) modal.remove();
+      } else {
+        this.addOutputLine('❌ Failed to switch session', 'output-error');
+      }
+    } catch (error) {
+      console.error('Error switching session:', error);
+      this.addOutputLine('❌ Error switching session', 'output-error');
+    }
+  }
+  
+  async closeSession(sessionId) {
+    if (!confirm('Are you sure you want to close this session? All variables and history will be lost.')) {
+      return;
+    }
+    
+    try {
+      const response = await fetch('/console/close_session', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        },
+        body: JSON.stringify({ session_id: sessionId })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        this.addOutputLine('✅ Session closed', 'output-result');
+        
+        if (data.switched_to) {
+          this.updateSessionDisplay(data.switched_to);
+          this.addOutputLine('✅ Switched to session: ' + data.switched_to.name, 'output-result');
+          this.loadHistory();
+        }
+        
+        // Refresh session modal
+        this.showSessionManager();
+      } else {
+        this.addOutputLine('❌ Failed to close session', 'output-error');
+      }
+    } catch (error) {
+      console.error('Error closing session:', error);
+      this.addOutputLine('❌ Error closing session', 'output-error');
+    }
+  }
+  
+  async loadHistory() {
+    try {
+      const response = await fetch('/console', {
+        method: 'GET',
+        headers: {
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+      });
+      
+      if (response.ok) {
+        // The response should include updated history for the current session
+        location.reload(); // Simple reload to get fresh session data
+      }
+    } catch (error) {
+      console.error('Error loading history:', error);
+    }
+  }
 }
 
 // Initialize console when DOM is loaded
@@ -283,4 +506,28 @@ function clearHistory() {
 
 function setCommand(command) {
   window.railsConsole.setCommand(command);
+}
+
+function newSession() {
+  window.railsConsole.newSession();
+}
+
+function showSessionManager() {
+  window.railsConsole.showSessionManager();
+}
+
+function closeSessionManager() {
+  window.railsConsole.closeSessionManager();
+}
+
+function createNewSession() {
+  window.railsConsole.createNewSession();
+}
+
+function selectSession(sessionId) {
+  window.railsConsole.selectSession(sessionId);
+}
+
+function closeSession(sessionId) {
+  window.railsConsole.closeSession(sessionId);
 }

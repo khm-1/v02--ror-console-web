@@ -1,4 +1,6 @@
 class ConsoleController < ApplicationController
+  require 'securerandom'
+  
   # Console execution context
   class ConsoleContext
     # Include the console helpers module
@@ -9,6 +11,7 @@ class ConsoleController < ApplicationController
       # Make Rails application available
       @app = Rails.application
       @session_variables = session_variables || {}
+      @session_variables = {} unless @session_variables.is_a?(Hash)
     end
     
     # Access to Rails application
@@ -172,13 +175,130 @@ class ConsoleController < ApplicationController
   end
   
   # Skip CSRF protection for AJAX requests
-  skip_before_action :verify_authenticity_token, only: [:execute]
+  skip_before_action :verify_authenticity_token, only: [:execute, :new_session, :session_list, :select_session, :close_session]
   
   # Basic authentication - you might want to implement proper auth
   before_action :authenticate_console_user
   
   def index
-    @command_history = session[:console_history] || []
+    initialize_sessions
+    @command_history = current_session_history
+    @current_session_id = session[:current_console_session_id]
+    @console_sessions = session[:console_sessions]
+  end
+  
+  # Session management methods
+  def new_session
+    initialize_sessions
+    
+    session_id = SecureRandom.hex(8)
+    session_name = params[:name] || "Session #{session_id[0..3]}"
+    
+    new_session_data = {
+      "id" => session_id,
+      "name" => session_name,
+      "history" => [],
+      "variables" => {},
+      "created_at" => Time.current.to_s,
+      "last_active" => Time.current.to_s
+    }
+    
+    session[:console_sessions][session_id] = new_session_data
+    
+    # Switch to new session
+    session[:current_console_session_id] = session_id
+    
+    render json: {
+      message: "New console session created",
+      session: new_session_data,
+      active_session_id: session_id
+    }
+  end
+  
+  def session_list
+    initialize_sessions
+    
+    sessions = session[:console_sessions].values.map do |sess|
+      {
+        id: sess["id"],
+        name: sess["name"],
+        created_at: sess["created_at"],
+        last_active: sess["last_active"],
+        history: sess["history"] || [],
+        variables: sess["variables"] || {},
+        command_count: (sess["history"] || []).length,
+        variable_count: (sess["variables"] || {}).keys.length,
+        is_active: sess["id"] == session[:current_console_session_id]
+      }
+    end
+    
+    current_session = session[:console_sessions][session[:current_console_session_id]]
+    
+    render json: {
+      sessions: sessions,
+      current_session: current_session,
+      active_session_id: session[:current_console_session_id],
+      total_sessions: sessions.length
+    }
+  end
+  
+  def select_session
+    initialize_sessions
+    
+    session_id = params[:session_id] || params[:id]
+    
+    unless session[:console_sessions].key?(session_id)
+      return render json: { error: "Session not found" }, status: 404
+    end
+    
+    # Update last active time for new session
+    session[:console_sessions][session_id]["last_active"] = Time.current.to_s
+    
+    # Switch to selected session
+    session[:current_console_session_id] = session_id
+    
+    selected_session = session[:console_sessions][session_id]
+    
+    render json: {
+      message: "Switched to session",
+      session: selected_session,
+      active_session_id: session_id,
+      history: selected_session["history"] || [],
+      variables: selected_session["variables"] || {}
+    }
+  end
+  
+  def close_session
+    initialize_sessions
+    
+    session_id = params[:session_id] || params[:id]
+    
+    unless session[:console_sessions].key?(session_id)
+      return render json: { error: "Session not found" }, status: 404
+    end
+    
+    # Don't allow closing the last session
+    if session[:console_sessions].keys.length == 1
+      return render json: { error: "Cannot close the last session" }, status: 400
+    end
+    
+    # Remove the session
+    closed_session = session[:console_sessions].delete(session_id)
+    
+    # If we're closing the active session, switch to another one
+    switched_to_session = nil
+    if session[:current_console_session_id] == session_id
+      session[:current_console_session_id] = session[:console_sessions].keys.first
+      switched_to_session = session[:console_sessions][session[:current_console_session_id]]
+    end
+    
+    render json: {
+      message: "Session closed",
+      closed_session: closed_session,
+      switched_to: switched_to_session,
+      active_session_id: session[:current_console_session_id],
+      remaining_sessions: session[:console_sessions].keys.length
+    }
   end
   
   def execute
@@ -192,33 +312,53 @@ class ConsoleController < ApplicationController
     end
     
     begin
-      # Store command in session history
-      session[:console_history] ||= []
-      session[:console_history] << command
-      session[:console_history] = session[:console_history].last(50) # Keep last 50 commands
+      initialize_sessions
+      current_session = get_current_session
+      
+      # Store command in current session history
+      current_session["history"] ||= []
+      current_session["history"] << command
+      current_session["history"] = current_session["history"].last(50) # Keep last 50 commands
+      current_session["last_active"] = Time.current.to_s
+      
+      # Update session in the main sessions hash
+      session[:console_sessions][session[:current_console_session_id]] = current_session
       
       # Execute the command in a safe context
-      result = execute_safe_command(command)
+      result = execute_safe_command(command, current_session)
       
       render json: {
         command: command,
         result: format_result(result),
-        timestamp: Time.current.to_s
+        timestamp: Time.current.to_s,
+        session_id: session[:current_console_session_id]
       }
     rescue => e
       render json: {
         command: command,
         error: e.message,
         error_class: e.class.name,
-        timestamp: Time.current.to_s
+        timestamp: Time.current.to_s,
+        session_id: session[:current_console_session_id]
       }
     end
   end
   
   def clear_history
-    session[:console_history] = []
-    session[:console_variables] = {} # Also clear variables
-    render json: { message: "History and variables cleared" }
+    initialize_sessions
+    current_session = get_current_session
+    
+    current_session["history"] = []
+    current_session["variables"] = {} # Also clear variables
+    current_session["last_active"] = Time.current.to_s
+    
+    # Update session in the main sessions hash
+    session[:console_sessions][session[:current_console_session_id]] = current_session
+    
+    render json: { 
+      message: "History and variables cleared for current session",
+      session_id: session[:current_console_session_id]
+    }
   end
   
   # Sandbox mode - more restricted console
@@ -370,12 +510,16 @@ class ConsoleController < ApplicationController
     sandbox_restricted_patterns.any? { |pattern| command.match?(pattern) }
   end
   
-  def execute_safe_command(command)
-    # Get session variables (or initialize empty hash)
-    session[:console_variables] ||= {}
+  def execute_safe_command(command, current_session = nil)
+    # Use provided session or get current session
+    current_session ||= get_current_session
+    
+    # Get session variables from current session and ensure it's a hash
+    session_variables = current_session["variables"] || {}
+    session_variables = {} unless session_variables.is_a?(Hash)
     
     # Create a safe execution context with session variables
-    context = ConsoleContext.new(session[:console_variables])
+    context = ConsoleContext.new(session_variables)
     
     # Check if this is a variable assignment
     if match = command.match(/\A\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)\z/)
@@ -386,19 +530,25 @@ class ConsoleController < ApplicationController
       # Evaluate the right-hand side expression first
       value = context.instance_eval(expression)
       
-      # Store the variable
+      # Store the variable in context
       context.session_variables[var_name] = value
       
-      # Store updated session variables back to session
-      session[:console_variables] = context.session_variables
+      # Store updated session variables back to current session
+      current_session["variables"] = context.session_variables
+      
+      # Update session in the main sessions hash
+      session[:console_sessions][session[:current_console_session_id]] = current_session
       
       return value
     else
       # For variable access and other expressions, use instance_eval
       result = context.instance_eval(command)
       
-      # Store updated session variables back to session
-      session[:console_variables] = context.session_variables
+      # Store updated session variables back to current session (in case new variables were created)
+      current_session["variables"] = context.session_variables
+      
+      # Update session in the main sessions hash
+      session[:console_sessions][session[:current_console_session_id]] = current_session
       
       result
     end
@@ -532,5 +682,48 @@ class ConsoleController < ApplicationController
     else
       relation.map { |record| format_single_item(record) }
     end
+  end
+  
+  def initialize_sessions
+    # Initialize console sessions structure if it doesn't exist
+    session[:console_sessions] ||= {}
+    
+    # Create default session if none exist
+    if session[:console_sessions].empty?
+      default_session_id = SecureRandom.hex(8)
+      session[:console_sessions][default_session_id] = {
+        "id" => default_session_id,
+        "name" => "Default Session",
+        "history" => session[:console_history] || [],
+        "variables" => session[:console_variables] || {},
+        "created_at" => Time.current.to_s,
+        "last_active" => Time.current.to_s
+      }
+      session[:current_console_session_id] = default_session_id
+      
+      # Clean up old session data
+      session.delete(:console_history)
+      session.delete(:console_variables)
+    end
+    
+    # Ensure we have a current session
+    unless session[:current_console_session_id] && session[:console_sessions].key?(session[:current_console_session_id])
+      session[:current_console_session_id] = session[:console_sessions].keys.first
+    end
+  end
+  
+  def get_current_session
+    initialize_sessions
+    current_session = session[:console_sessions][session[:current_console_session_id]]
+    
+    # Ensure the session has the required structure
+    current_session["history"] ||= []
+    current_session["variables"] ||= {}
+    
+    current_session
+  end
+  
+  def current_session_history
+    get_current_session["history"] || []
   end
 end
